@@ -1,6 +1,3 @@
-# ============================================================================
-# Udyam Saathi — Root Dockerfile for Google Cloud Run / Container Registry
-# ============================================================================
 FROM python:3.11-slim as base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

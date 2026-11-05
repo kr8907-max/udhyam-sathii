@@ -1,0 +1,1122 @@
+
+from __future__ import annotations
+import json
+import logging
+import time
+import uuid
+import sqlite3
+from datetime import datetime, timezone
+from typing import Optional, Union, Any
+from pathlib import Path
+
+try:
+    from app.config import settings
+except ImportError:
+    from backend.app.config import settings
+
+logger = logging.getLogger(__name__)
+
+FALLBACK_STATES = [
+    {"state_code": 1, "state_name": "Jammu and Kashmir", "state_or_ut": "U"},
+    {"state_code": 2, "state_name": "Himachal Pradesh", "state_or_ut": "S"},
+    {"state_code": 3, "state_name": "Punjab", "state_or_ut": "S"},
+    {"state_code": 4, "state_name": "Chandigarh", "state_or_ut": "U"},
+    {"state_code": 5, "state_name": "Uttarakhand", "state_or_ut": "S"},
+    {"state_code": 6, "state_name": "Haryana", "state_or_ut": "S"},
+    {"state_code": 7, "state_name": "Delhi", "state_or_ut": "U"},
+    {"state_code": 8, "state_name": "Rajasthan", "state_or_ut": "S"},
+    {"state_code": 9, "state_name": "Uttar Pradesh", "state_or_ut": "S"},
+    {"state_code": 10, "state_name": "Bihar", "state_or_ut": "S"},
+    {"state_code": 11, "state_name": "Sikkim", "state_or_ut": "S"},
+    {"state_code": 12, "state_name": "Arunachal Pradesh", "state_or_ut": "S"},
+    {"state_code": 13, "state_name": "Nagaland", "state_or_ut": "S"},
+    {"state_code": 14, "state_name": "Manipur", "state_or_ut": "S"},
+    {"state_code": 15, "state_name": "Mizoram", "state_or_ut": "S"},
+    {"state_code": 16, "state_name": "Tripura", "state_or_ut": "S"},
+    {"state_code": 17, "state_name": "Meghalaya", "state_or_ut": "S"},
+    {"state_code": 18, "state_name": "Assam", "state_or_ut": "S"},
+    {"state_code": 19, "state_name": "West Bengal", "state_or_ut": "S"},
+    {"state_code": 20, "state_name": "Jharkhand", "state_or_ut": "S"},
+    {"state_code": 21, "state_name": "Odisha", "state_or_ut": "S"},
+    {"state_code": 22, "state_name": "Chhattisgarh", "state_or_ut": "S"},
+    {"state_code": 23, "state_name": "Madhya Pradesh", "state_or_ut": "S"},
+    {"state_code": 24, "state_name": "Gujarat", "state_or_ut": "S"},
+    {"state_code": 27, "state_name": "Maharashtra", "state_or_ut": "S"},
+    {"state_code": 28, "state_name": "Andhra Pradesh", "state_or_ut": "S"},
+    {"state_code": 29, "state_name": "Karnataka", "state_or_ut": "S"},
+    {"state_code": 30, "state_name": "Goa", "state_or_ut": "S"},
+    {"state_code": 31, "state_name": "Lakshadweep", "state_or_ut": "U"},
+    {"state_code": 32, "state_name": "Kerala", "state_or_ut": "S"},
+    {"state_code": 33, "state_name": "Tamil Nadu", "state_or_ut": "S"},
+    {"state_code": 34, "state_name": "Puducherry", "state_or_ut": "U"},
+    {"state_code": 35, "state_name": "Andaman and Nicobar Islands", "state_or_ut": "U"},
+    {"state_code": 36, "state_name": "Telangana", "state_or_ut": "S"},
+    {"state_code": 37, "state_name": "Ladakh", "state_or_ut": "U"},
+]
+
+FALLBACK_DISTRICTS = {
+    19: [
+        {"district_code": 312, "district_name": "Bankura", "state_code": 19},
+        {"district_code": 313, "district_name": "Purulia", "state_code": 19},
+        {"district_code": 314, "district_name": "Birbhum", "state_code": 19},
+        {"district_code": 315, "district_name": "Purba Bardhaman", "state_code": 19},
+        {"district_code": 318, "district_name": "Kolkata", "state_code": 19},
+    ],
+    29: [
+        {"district_code": 541, "district_name": "Ramanagara", "state_code": 29},
+        {"district_code": 542, "district_name": "Bengaluru Urban", "state_code": 29},
+        {"district_code": 543, "district_name": "Bengaluru Rural", "state_code": 29},
+        {"district_code": 544, "district_name": "Mysuru", "state_code": 29},
+    ],
+    9: [
+        {"district_code": 178, "district_name": "Varanasi", "state_code": 9},
+        {"district_code": 179, "district_name": "Bulandshahr", "state_code": 9},
+        {"district_code": 180, "district_name": "Lucknow", "state_code": 9},
+        {"district_code": 181, "district_name": "Prayagraj", "state_code": 9},
+    ],
+    23: [
+        {"district_code": 401, "district_name": "Ujjain", "state_code": 23},
+        {"district_code": 402, "district_name": "Indore", "state_code": 23},
+        {"district_code": 403, "district_name": "Bhopal", "state_code": 23},
+    ],
+    33: [
+        {"district_code": 580, "district_name": "Chennai", "state_code": 33},
+        {"district_code": 581, "district_name": "Coimbatore", "state_code": 33},
+        {"district_code": 582, "district_name": "Madurai", "state_code": 33},
+    ],
+    27: [
+        {"district_code": 480, "district_name": "Pune", "state_code": 27},
+        {"district_code": 481, "district_name": "Mumbai", "state_code": 27},
+        {"district_code": 482, "district_name": "Nagpur", "state_code": 27},
+    ],
+}
+
+
+class DatabaseManager:
+    _instance: Optional[DatabaseManager] = None
+
+    def __init__(self):
+        self.pool = None
+        self.sqlite: Optional[sqlite3.Connection] = None
+        self.in_memory_users: dict[str, dict[str, Any]] = {}
+        self.in_memory_projects: dict[str, dict[str, Any]] = {}
+        self.in_memory_reports: dict[str, dict[str, Any]] = {}
+
+        self.in_memory_users["guest_user"] = {
+            "firebase_uid": "guest_user",
+            "name": "Guest Entrepreneur",
+            "email": "guest@udyam.gov.in",
+            "gender": "Unspecified",
+            "auth_provider": "email",
+            "phone": None,
+            "additional_business_details": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "last_login_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @classmethod
+    def get_instance(cls) -> DatabaseManager:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    async def initialize(self):
+        if settings.DATABASE_URL and settings.DATABASE_URL.strip():
+            try:
+                import asyncpg
+                self.pool = await asyncpg.create_pool(
+                    settings.DATABASE_URL.strip(),
+                    min_size=1,
+                    max_size=3,
+                    timeout=10.0,
+                )
+                logger.info("Connected to Neon PostgreSQL pool successfully.")
+                await self._init_tables()
+            except Exception as e:
+                logger.warning(f"PostgreSQL connection failed ({e}); falling back to durable SQLite storage.")
+                self.pool = None
+                self._initialize_sqlite()
+        else:
+            self._initialize_sqlite()
+
+    def _initialize_sqlite(self):
+        db_path = Path(__file__).resolve().parent / "data" / "udyam_saathi.sqlite3"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sqlite = sqlite3.connect(str(db_path), check_same_thread=False)
+        self.sqlite.row_factory = sqlite3.Row
+        self.sqlite.executescript("""
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS users (firebase_uid TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, gender TEXT, auth_provider TEXT, phone TEXT, additional_business_details TEXT, language TEXT NOT NULL DEFAULT 'en', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_login_at TEXT);
+            CREATE TABLE IF NOT EXISTS projects (project_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(firebase_uid) ON DELETE CASCADE);
+            CREATE INDEX IF NOT EXISTS idx_projects_user_id_sqlite ON projects(user_id);
+            CREATE TABLE IF NOT EXISTS feasibility_reports (report_id TEXT PRIMARY KEY, user_id TEXT, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS revoked_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, revoked_at TEXT NOT NULL);
+        """)
+        existing_columns = {row[1] for row in self.sqlite.execute("PRAGMA table_info(users)")}
+        if "language" not in existing_columns:
+            self.sqlite.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'en'")
+        self.sqlite.commit()
+        logger.info("DATABASE_URL not set; using durable SQLite fallback at %s.", db_path)
+
+    async def _init_tables(self):
+        if not self.pool:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        firebase_uid                TEXT PRIMARY KEY,
+                        name                         TEXT NOT NULL,
+                        email                        TEXT NOT NULL,
+                        phone                        TEXT,
+                        language                     TEXT DEFAULT 'en',
+                        created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                """)
+
+                try:
+                    await conn.execute("""
+                        INSERT INTO users (firebase_uid, name, email, language)
+                        VALUES ('guest_user', 'Guest Entrepreneur', 'guest@udyam.gov.in', 'en')
+                        ON CONFLICT (firebase_uid) DO NOTHING;
+                    """)
+                except Exception:
+                    pass
+
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS projects (
+                        project_id                   TEXT PRIMARY KEY,
+                        user_id                      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+                        business_name                TEXT NOT NULL,
+                        business_category            TEXT NOT NULL,
+                        investment_amount            NUMERIC(15, 2) NOT NULL,
+                        state_name                   TEXT NOT NULL,
+                        district_name                TEXT NOT NULL,
+                        block_name                   TEXT,
+                        village_name                 TEXT,
+                        language                     TEXT DEFAULT 'en',
+                        additional_business_details TEXT,
+                        monthly_net_operating_income_override NUMERIC(15, 2),
+                        status                       TEXT DEFAULT 'draft',
+                        analysis_result              JSONB,
+                        created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                """)
+
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+                """)
+
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS feasibility_reports (
+                        report_id VARCHAR(64) PRIMARY KEY,
+                        user_id TEXT REFERENCES users(firebase_uid) ON DELETE CASCADE,
+                        report_payload JSONB NOT NULL,
+                        dpr_payload JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_feasibility_reports_user_id ON feasibility_reports(user_id);
+                """)
+
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS revoked_sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+                        revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
+                logger.info("PostgreSQL schema & tables (users, projects, reports) verified/initialized successfully.")
+        except Exception as e:
+            logger.warning(f"Could not auto-create tables: {e}")
+
+    async def close(self):
+        if self.pool:
+            await self.pool.close()
+            self.pool = None
+        if self.sqlite:
+            self.sqlite.close()
+            self.sqlite = None
+
+    async def revoke_session(self, token_hash: str, user_id: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if not hasattr(self, "revoked_sessions"):
+            self.revoked_sessions: set[str] = set()
+        self.revoked_sessions.add(token_hash)
+        if self.pool:
+            async with self.pool.acquire() as conn:
+                await conn.execute("INSERT INTO revoked_sessions (token_hash, user_id) VALUES ($1, $2) ON CONFLICT (token_hash) DO NOTHING", token_hash, user_id)
+        elif self.sqlite:
+            self.sqlite.execute("INSERT OR IGNORE INTO revoked_sessions (token_hash, user_id, revoked_at) VALUES (?, ?, ?)", (token_hash, user_id, now))
+            self.sqlite.commit()
+
+    async def is_session_revoked(self, token_hash: str) -> bool:
+        if token_hash in getattr(self, "revoked_sessions", set()):
+            return True
+        if self.pool:
+            async with self.pool.acquire() as conn:
+                return bool(await conn.fetchval("SELECT 1 FROM revoked_sessions WHERE token_hash = $1", token_hash))
+        if self.sqlite:
+            return self.sqlite.execute("SELECT 1 FROM revoked_sessions WHERE token_hash = ?", (token_hash,)).fetchone() is not None
+        return False
+
+    async def upsert_user(
+        self,
+        firebase_uid: str,
+        email: str,
+        name: str,
+        gender: Optional[str] = "Unspecified",
+        auth_provider: str = "email",
+        phone: Optional[str] = None,
+        additional_business_details: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        user_record = {
+            "firebase_uid": firebase_uid,
+            "email": email,
+            "name": name,
+            "gender": gender or "Unspecified",
+            "auth_provider": auth_provider,
+            "phone": phone,
+            "additional_business_details": additional_business_details,
+            "language": language or "en",
+            "created_at": now,
+            "updated_at": now,
+            "last_login_at": now,
+        }
+
+        if firebase_uid in self.in_memory_users:
+            existing = self.in_memory_users[firebase_uid]
+            user_record["created_at"] = existing.get("created_at", now)
+            if not phone and existing.get("phone"):
+                user_record["phone"] = existing["phone"]
+            if not additional_business_details and existing.get("additional_business_details"):
+                user_record["additional_business_details"] = existing["additional_business_details"]
+            if not language and existing.get("language"):
+                user_record["language"] = existing["language"]
+
+        self.in_memory_users[firebase_uid] = user_record
+
+        if self.sqlite:
+            existing = self.sqlite.execute("SELECT created_at FROM users WHERE firebase_uid = ?", (firebase_uid,)).fetchone()
+            if existing:
+                user_record["created_at"] = existing["created_at"]
+            self.sqlite.execute("INSERT INTO users (firebase_uid, email, name, gender, auth_provider, phone, additional_business_details, language, created_at, updated_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(firebase_uid) DO UPDATE SET email=excluded.email, name=excluded.name, gender=excluded.gender, auth_provider=excluded.auth_provider, phone=COALESCE(excluded.phone, users.phone), additional_business_details=COALESCE(excluded.additional_business_details, users.additional_business_details), language=COALESCE(excluded.language, users.language), updated_at=excluded.updated_at, last_login_at=excluded.last_login_at", (firebase_uid, user_record["email"], user_record["name"], user_record["gender"], user_record["auth_provider"], user_record["phone"], user_record["additional_business_details"], user_record["language"], user_record["created_at"], now, now))
+            self.sqlite.commit()
+            return user_record
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        INSERT INTO users (firebase_uid, name, email, phone, language, created_at)
+                        VALUES ($1, $2, $3, $4, COALESCE($5, 'en'), NOW())
+                        ON CONFLICT (firebase_uid) DO UPDATE SET
+                            name = COALESCE(NULLIF(EXCLUDED.name, ''), users.name),
+                            email = EXCLUDED.email,
+                            phone = COALESCE(EXCLUDED.phone, users.phone),
+                            language = COALESCE(EXCLUDED.language, users.language)
+                        RETURNING *;
+                    """, firebase_uid, name, email, phone, language)
+                    if row:
+                        rec = dict(row)
+                        for k in ("created_at", "updated_at", "last_login_at"):
+                            if rec.get(k) and hasattr(rec[k], "isoformat"):
+                                rec[k] = rec[k].isoformat()
+                        self.in_memory_users[firebase_uid] = rec
+                        return rec
+            except Exception as e:
+                logger.warning(f"Could not upsert user to PostgreSQL ({e}); using in-memory store.")
+
+        return user_record
+
+    async def get_user(self, firebase_uid: str) -> Optional[dict[str, Any]]:
+        if self.sqlite:
+            row = self.sqlite.execute("SELECT * FROM users WHERE firebase_uid = ?", (firebase_uid,)).fetchone()
+            if row:
+                rec = dict(row)
+                self.in_memory_users[firebase_uid] = rec
+                return rec
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT * FROM users WHERE firebase_uid = $1", firebase_uid)
+                    if row:
+                        rec = dict(row)
+                        for k in ("created_at", "updated_at", "last_login_at"):
+                            if rec.get(k) and hasattr(rec[k], "isoformat"):
+                                rec[k] = rec[k].isoformat()
+                        self.in_memory_users[firebase_uid] = rec
+                        return rec
+            except Exception as e:
+                logger.warning(f"Could not fetch user from PostgreSQL: {e}")
+
+        return self.in_memory_users.get(firebase_uid)
+
+    async def update_user(self, firebase_uid: str, fields: dict[str, Any]) -> Optional[dict[str, Any]]:
+        now = datetime.now(timezone.utc).isoformat()
+        allowed_fields = {"name", "phone", "language"}
+        fields = {key: value for key, value in fields.items() if key in allowed_fields}
+        if firebase_uid in self.in_memory_users:
+            self.in_memory_users[firebase_uid].update(fields)
+            self.in_memory_users[firebase_uid]["updated_at"] = now
+
+        if self.sqlite:
+            if not fields:
+                return await self.get_user(firebase_uid)
+            assignments = ", ".join(f"{key} = ?" for key in fields)
+            self.sqlite.execute(f"UPDATE users SET {assignments}, updated_at = ? WHERE firebase_uid = ?", (*fields.values(), now, firebase_uid))
+            self.sqlite.commit()
+            return await self.get_user(firebase_uid)
+
+        if self.pool:
+            try:
+                set_clauses = []
+                values = [firebase_uid]
+                idx = 2
+                for k, v in fields.items():
+                    if k in allowed_fields:
+                        set_clauses.append(f"{k} = ${idx}")
+                        values.append(v)
+                        idx += 1
+
+                if set_clauses:
+                    query = f"UPDATE users SET {', '.join(set_clauses)} WHERE firebase_uid = $1 RETURNING *"
+                    async with self.pool.acquire() as conn:
+                        row = await conn.fetchrow(query, *values)
+                        if row:
+                            rec = dict(row)
+                            for k in ("created_at", "updated_at", "last_login_at"):
+                                if rec.get(k) and hasattr(rec[k], "isoformat"):
+                                    rec[k] = rec[k].isoformat()
+                            self.in_memory_users[firebase_uid] = rec
+                            return rec
+            except Exception as e:
+                logger.warning(f"Could not update user in PostgreSQL: {e}")
+
+        return self.in_memory_users.get(firebase_uid)
+
+    async def delete_user(self, firebase_uid: str) -> bool:
+        if firebase_uid in self.in_memory_users:
+            del self.in_memory_users[firebase_uid]
+        to_del = [pid for pid, p in self.in_memory_projects.items() if p.get("user_id") == firebase_uid]
+        for pid in to_del:
+            del self.in_memory_projects[pid]
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM users WHERE firebase_uid = $1", firebase_uid)
+                    return True
+            except Exception as e:
+                logger.warning(f"Could not delete user from PostgreSQL: {e}")
+        return True
+
+    async def get_user_projects_count(self, firebase_uid: str) -> int:
+        if self.sqlite:
+            return int(self.sqlite.execute("SELECT COUNT(*) FROM projects WHERE user_id = ?", (firebase_uid,)).fetchone()[0])
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    cnt = await conn.fetchval("SELECT COUNT(*) FROM projects WHERE user_id = $1", firebase_uid)
+                    return int(cnt or 0)
+            except Exception as e:
+                logger.warning(f"Could not count projects in PostgreSQL: {e}")
+
+        return sum(1 for p in self.in_memory_projects.values() if p.get("user_id") == firebase_uid)
+
+    async def get_states(self) -> list[dict[str, Any]]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT state_code, state_name, state_or_ut, census_2011_code FROM states ORDER BY state_name")
+                    if rows:
+                        return [dict(r) for r in rows]
+            except Exception as e:
+                logger.warning(f"Error querying states from DB: {e}")
+        return FALLBACK_STATES
+
+    async def get_districts(self, state_code: Optional[int] = None, state_name: Optional[str] = None, search: Optional[str] = None) -> list[dict[str, Any]]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    resolved_code = state_code
+                    if resolved_code is None and state_name:
+                        resolved_code = await conn.fetchval(
+                            "SELECT state_code FROM states WHERE LOWER(state_name) = LOWER($1) OR state_name ILIKE $1 LIMIT 1",
+                            state_name.strip()
+                        )
+                    
+                    if resolved_code is not None:
+                        rows = await conn.fetch(
+                            "SELECT district_code, district_name, state_code, census_2011_code FROM districts WHERE state_code = $1 ORDER BY district_name",
+                            resolved_code
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+                    elif search:
+                        rows = await conn.fetch(
+                            "SELECT district_code, district_name, state_code, census_2011_code FROM districts WHERE district_name ILIKE $1 ORDER BY district_name LIMIT 100",
+                            f"%{search.strip()}%"
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT district_code, district_name, state_code, census_2011_code FROM districts ORDER BY district_name LIMIT 100"
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+            except Exception as e:
+                logger.warning(f"Error querying districts from DB: {e}")
+
+        resolved_code = state_code
+        if resolved_code is None and state_name:
+            for s in FALLBACK_STATES:
+                if s["state_name"].lower() == state_name.lower():
+                    resolved_code = s["state_code"]
+                    break
+
+        if resolved_code in FALLBACK_DISTRICTS:
+            return FALLBACK_DISTRICTS[resolved_code]
+        all_dists = []
+        for d_list in FALLBACK_DISTRICTS.values():
+            all_dists.extend(d_list)
+        return all_dists[:20]
+
+    async def get_blocks(
+        self,
+        district_code: Optional[int] = None,
+        district_name: Optional[str] = None,
+        state_name: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    resolved_dist = district_code
+                    if resolved_dist is None and district_name:
+                        resolved_dist = await conn.fetchval(
+                            "SELECT district_code FROM districts WHERE LOWER(district_name) = LOWER($1) OR district_name ILIKE $1 LIMIT 1",
+                            district_name.strip()
+                        )
+                    
+                    if resolved_dist is not None:
+                        rows = await conn.fetch(
+                            "SELECT development_block_code, development_block_name, district_code FROM blocks WHERE district_code = $1 ORDER BY development_block_name",
+                            resolved_dist
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+                    elif search:
+                        rows = await conn.fetch(
+                            "SELECT development_block_code, development_block_name, district_code FROM blocks WHERE development_block_name ILIKE $1 ORDER BY development_block_name LIMIT 100",
+                            f"%{search.strip()}%"
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+            except Exception as e:
+                logger.warning(f"Error querying blocks from DB: {e}")
+
+        dist_id = district_code or 312
+        return [
+            {"development_block_code": dist_id * 10 + 1, "development_block_name": f"{district_name or 'Central'} Block", "district_code": dist_id},
+            {"development_block_code": dist_id * 10 + 2, "development_block_name": f"{district_name or 'Rural'} Block North", "district_code": dist_id},
+            {"development_block_code": dist_id * 10 + 3, "development_block_name": f"{district_name or 'Rural'} Block South", "district_code": dist_id},
+        ]
+
+    async def get_villages(
+        self,
+        district_code: Optional[int] = None,
+        block_code: Optional[int] = None,
+        district_name: Optional[str] = None,
+        block_name: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    resolved_dist = district_code
+                    if resolved_dist is None and district_name:
+                        resolved_dist = await conn.fetchval(
+                            "SELECT district_code FROM districts WHERE LOWER(district_name) = LOWER($1) OR district_name ILIKE $1 LIMIT 1",
+                            district_name.strip()
+                        )
+
+                    resolved_block = block_code
+                    if resolved_block is None and block_name:
+                        resolved_block = await conn.fetchval(
+                            "SELECT development_block_code FROM blocks WHERE LOWER(development_block_name) = LOWER($1) OR development_block_name ILIKE $1 LIMIT 1",
+                            block_name.strip()
+                        )
+
+                    if resolved_block is not None:
+                        rows = await conn.fetch(
+                            "SELECT id, village_code, village_name, subdistrict_code, district_code, state_code, development_block_code, pincode FROM villages WHERE development_block_code = $1 ORDER BY village_name LIMIT 100",
+                            resolved_block
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+
+                    if resolved_dist is not None:
+                        rows = await conn.fetch(
+                            "SELECT id, village_code, village_name, subdistrict_code, district_code, state_code, development_block_code, pincode FROM villages WHERE district_code = $1 ORDER BY village_name LIMIT 100",
+                            resolved_dist
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+
+                    if search:
+                        rows = await conn.fetch(
+                            "SELECT id, village_code, village_name, subdistrict_code, district_code, state_code, development_block_code, pincode FROM villages WHERE village_name ILIKE $1 ORDER BY village_name LIMIT 100",
+                            f"%{search.strip()}%"
+                        )
+                        if rows:
+                            return [dict(r) for r in rows]
+            except Exception as e:
+                logger.warning(f"Error querying villages from DB: {e}")
+
+        try:
+            import sqlite3
+            from pathlib import Path
+            loc_db = Path(__file__).parent / "core" / "data" / "locality_master.sqlite3"
+            if loc_db.exists():
+                conn_sqlite = sqlite3.connect(str(loc_db))
+                conn_sqlite.row_factory = sqlite3.Row
+                cur = conn_sqlite.cursor()
+
+                conditions = ["latitude IS NOT NULL", "longitude IS NOT NULL"]
+                params = []
+
+                if district_name:
+                    conditions.append("UPPER(district) LIKE ?")
+                    params.append(f"%{district_name.strip().upper()}%")
+
+                if block_name:
+                    conditions.append("(UPPER(taluk) LIKE ? OR UPPER(office_name) LIKE ?)")
+                    params.extend([f"%{block_name.strip().upper()}%", f"%{block_name.strip().upper()}%"])
+
+                if search:
+                    conditions.append("(UPPER(office_name) LIKE ? OR UPPER(taluk) LIKE ? OR pincode LIKE ?)")
+                    s_clean = f"%{search.strip().upper()}%"
+                    params.extend([s_clean, s_clean, s_clean])
+
+                where_clause = " AND ".join(conditions)
+                query = f"""
+                    SELECT DISTINCT office_name, taluk, district, state, pincode, latitude, longitude
+                    FROM pincode_localities
+                    WHERE {where_clause}
+                    ORDER BY (office_name LIKE '%Devachi%') DESC, office_name ASC
+                    LIMIT 200
+                """
+                sqlite_rows = cur.execute(query, params).fetchall()
+                conn_sqlite.close()
+
+                if sqlite_rows:
+                    dist_id = district_code or 312
+                    return [
+                        {
+                            "id": idx + 1,
+                            "village_code": int(r["pincode"]) if (r["pincode"] and str(r["pincode"]).isdigit()) else (dist_id * 100 + idx + 1),
+                            "village_name": r["office_name"],
+                            "district_code": dist_id,
+                            "pincode": r["pincode"] or "",
+                            "latitude": r["latitude"],
+                            "longitude": r["longitude"],
+                            "taluk": r["taluk"] or "",
+                        }
+                        for idx, r in enumerate(sqlite_rows)
+                    ]
+        except Exception as err:
+            logger.warning(f"Error querying sqlite fallback for villages: {err}")
+
+        dist_id = district_code or 312
+        return [
+            {"id": 1, "village_code": dist_id * 100 + 1, "village_name": f"Gram {district_name or 'Joypur'}", "district_code": dist_id, "pincode": "722138"},
+            {"id": 2, "village_code": dist_id * 100 + 2, "village_name": f"Gram {district_name or 'Kalyanpur'}", "district_code": dist_id, "pincode": "722139"},
+            {"id": 3, "village_code": dist_id * 100 + 3, "village_name": f"Gram {district_name or 'Shivpur'}", "district_code": dist_id, "pincode": "722140"},
+        ]
+
+    async def get_census_demographics(
+        self,
+        state_name: str,
+        district_name: str,
+        village_name: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    d_clean = district_name.strip()
+                    row_dist = await conn.fetchrow("""
+                        SELECT total_population, total_households, sc_population, st_population, literate_population, area_name
+                        FROM census_raw
+                        WHERE area_name ILIKE $1 AND administrative_level IN ('DISTRICT', 'SUB-DISTRICT')
+                        ORDER BY total_population DESC
+                        LIMIT 1
+                    """, f"%{d_clean}%")
+                    dist_pop = int(row_dist["total_population"]) if (row_dist and row_dist["total_population"]) else 1250000
+
+                    if village_name and village_name.strip() and village_name.strip() != "N/A":
+                        v_clean = village_name.strip()
+                        row = await conn.fetchrow("""
+                            SELECT total_population, total_households, sc_population, st_population, literate_population, area_name, administrative_level
+                            FROM census_raw
+                            WHERE area_name ILIKE $1
+                            ORDER BY total_population DESC
+                            LIMIT 1
+                        """, f"%{v_clean}%")
+                        if row and row["total_population"] and row["total_population"] > 0:
+                            v_pop = int(row["total_population"])
+                            return {
+                                "base_population_2011": v_pop,
+                                "district_population_2011": max(dist_pop, v_pop),
+                                "base_households_2011": int(row["total_households"] or max(int(v_pop / 4.8), 1)),
+                                "sc_population": int(row["sc_population"] or 0),
+                                "st_population": int(row["st_population"] or 0),
+                                "literate_population": int(row["literate_population"] or 0),
+                                "area_name": row["area_name"],
+                                "provenance": "census_exact_village",
+                            }
+
+                    if row_dist and row_dist["total_population"] and row_dist["total_population"] > 0:
+                        derived_village_pop = min(max(int(dist_pop / 350), 1200), 15000)
+                        return {
+                            "base_population_2011": derived_village_pop,
+                            "district_population_2011": dist_pop,
+                            "base_households_2011": max(int(derived_village_pop / 4.8), 1),
+                            "sc_population": int(row_dist["sc_population"] or 0),
+                            "st_population": int(row_dist["st_population"] or 0),
+                            "literate_population": int(row_dist["literate_population"] or 0),
+                            "area_name": f"Catchment in {row_dist['area_name']}",
+                            "provenance": "census_district_catchment",
+                        }
+            except Exception as e:
+                logger.warning(f"Census query error: {e}")
+
+        return {
+            "base_population_2011": 3850,
+            "district_population_2011": 1250000,
+            "base_households_2011": 802,
+            "sc_population": 540,
+            "st_population": 120,
+            "literate_population": 2680,
+            "area_name": f"Catchment {village_name or district_name}",
+            "provenance": "regional_baseline",
+        }
+
+    async def get_district_msme_stats(
+        self,
+        state_name: str,
+        district_name: str,
+    ) -> dict[str, Any]:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    d_clean = district_name.strip()
+                    row = await conn.fetchrow("""
+                        SELECT total, micro, small, medium, state_name, district_name
+                        FROM msme_district
+                        WHERE district_name ILIKE $1 OR district_name ILIKE $2
+                        LIMIT 1
+                    """, d_clean, f"%{d_clean}%")
+                    if row and row["total"] is not None:
+                        return {
+                            "total_msme": int(row["total"]),
+                            "micro": int(row["micro"] or 0),
+                            "small": int(row["small"] or 0),
+                            "medium": int(row["medium"] or 0),
+                            "state_name": row["state_name"],
+                            "district_name": row["district_name"],
+                            "provenance": "msme_district_live",
+                        }
+            except Exception as e:
+                logger.warning(f"MSME district query error: {e}")
+
+        return {
+            "total_msme": 1250,
+            "micro": 1200,
+            "small": 45,
+            "medium": 5,
+            "state_name": state_name,
+            "district_name": district_name,
+            "provenance": "state_baseline",
+        }
+
+    async def get_state_cpi_inflation(self, state_name: str) -> float:
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    s_clean = state_name.strip()
+                    row = await conn.fetchrow("""
+                        SELECT inflation
+                        FROM cpi_data
+                        WHERE (state ILIKE $1 OR state = 'All India') AND sector = 'Rural' AND division = 'CPI (General)'
+                        ORDER BY year DESC, month DESC
+                        LIMIT 1
+                    """, f"%{s_clean}%")
+                    if row and row["inflation"] is not None:
+                        return float(row["inflation"])
+            except Exception as e:
+                logger.warning(f"CPI query error: {e}")
+
+        return 4.85
+
+    async def get_weather_risk_score(self, state_name: str, district_name: str) -> float:
+        coastal_riverine = ["West Bengal", "Kerala", "Assam", "Odisha", "Bihar", "Tamil Nadu", "Andhra Pradesh", "Goa"]
+        arid_drought = ["Rajasthan", "Gujarat", "Haryana", "Punjab"]
+        hilly_landslide = ["Himachal Pradesh", "Uttarakhand", "Jammu and Kashmir", "Sikkim", "Meghalaya"]
+
+        s_clean = state_name.strip()
+        if any(c.lower() in s_clean.lower() for c in coastal_riverine):
+            return 0.28
+        elif any(a.lower() in s_clean.lower() for a in arid_drought):
+            return 0.15
+        elif any(h.lower() in s_clean.lower() for h in hilly_landslide):
+            return 0.32
+        return 0.20
+
+    @staticmethod
+    def _hydrate_project_record(row: dict[str, Any]) -> dict[str, Any]:
+        persisted = dict(row)
+        stored_analysis = persisted.get("analysis_result") or {}
+        if isinstance(stored_analysis, str):
+            stored_analysis = json.loads(stored_analysis)
+        snapshot = stored_analysis.pop("_project", {}) if isinstance(stored_analysis, dict) else {}
+        rec = {**snapshot, **persisted}
+        rec["analysis_result"] = stored_analysis or None
+        rec["enterprise_name"] = rec.get("business_name") or rec.get("enterprise_name", "Enterprise Unit")
+        rec["project_cost"] = float(rec.get("investment_amount") or rec.get("project_cost") or 0.0)
+        rec["investment_amount"] = float(rec.get("investment_amount") or 0.0)
+        rec["annual_turnover_estimate"] = float(rec.get("annual_turnover_estimate") or 0.0)
+        rec["tenure_years"] = float(rec.get("tenure_years") or 5.0)
+        rec["moratorium_months"] = int(rec.get("moratorium_months") or 6)
+        rec["sector"] = rec.get("sector", "general")
+        rec["promoter_name"] = rec.get("promoter_name", "Enterprise Promoter")
+        rec["promoter_category"] = rec.get("promoter_category", "general")
+        rec["gender"] = rec.get("gender", "Unspecified")
+        rec["is_rural"] = bool(rec.get("is_rural", True))
+        for key in ("created_at", "updated_at"):
+            if rec.get(key) and hasattr(rec[key], "isoformat"):
+                rec[key] = rec[key].isoformat()
+        rec["updated_at"] = rec.get("updated_at") or rec.get("created_at") or datetime.now(timezone.utc).isoformat()
+        return rec
+
+    async def create_project(self, project_dict: dict[str, Any]) -> dict[str, Any]:
+        project_id = project_dict.get("project_id") or f"proj_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        
+        business_name = project_dict.get("enterprise_name") or project_dict.get("business_name", "Enterprise Unit")
+        business_category = project_dict.get("business_category", "manufacturing")
+        investment_amount = float(project_dict.get("project_cost") or project_dict.get("investment_amount", 500000.0))
+        annual_turnover = float(project_dict.get("annual_turnover_estimate", 600000.0))
+        state_name = project_dict.get("state_name", "West Bengal")
+        district_name = project_dict.get("district_name", "Bankura")
+        block_name = project_dict.get("block_name", "Joypur")
+        village_name = project_dict.get("village_name", "Joypur")
+        promoter_name = project_dict.get("promoter_name", "Enterprise Promoter")
+        promoter_category = project_dict.get("promoter_category", "general")
+        gender = project_dict.get("gender", "Unspecified")
+        is_rural = bool(project_dict.get("is_rural", True))
+        tenure_years = float(project_dict.get("tenure_years", 5.0))
+        moratorium_months = int(project_dict.get("moratorium_months", 6))
+        language = project_dict.get("language", "en")
+        additional_business_details = project_dict.get("additional_business_details")
+        user_id = project_dict.get("user_id", "guest_user")
+        analysis_result = project_dict.get("analysis_result", None)
+
+        record = {
+            **project_dict,
+            "project_id": project_id,
+            "user_id": user_id,
+            "enterprise_name": business_name,
+            "business_name": business_name,
+            "business_category": business_category,
+            "sector": project_dict.get("sector", "general"),
+            "project_cost": investment_amount,
+            "investment_amount": investment_amount,
+            "annual_turnover_estimate": annual_turnover,
+            "state_name": state_name,
+            "district_name": district_name,
+            "block_name": block_name,
+            "village_name": village_name,
+            "promoter_name": promoter_name,
+            "promoter_category": promoter_category,
+            "gender": gender,
+            "is_rural": is_rural,
+            "tenure_years": tenure_years,
+            "moratorium_months": moratorium_months,
+            "language": language,
+            "additional_business_details": additional_business_details,
+            "status": project_dict.get("status", "draft"),
+            "analysis_result": analysis_result,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.in_memory_projects[project_id] = record
+        if len(self.in_memory_projects) > 30:
+            for old_id in list(self.in_memory_projects.keys())[:-20]:
+                self.in_memory_projects.pop(old_id, None)
+
+        if self.sqlite:
+            await self.upsert_user(
+                firebase_uid=user_id,
+                email=f"{user_id}@udyam.gov.in" if "@" not in user_id else user_id,
+                name=promoter_name or "Entrepreneur",
+            )
+            existing = self.sqlite.execute("SELECT created_at FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+            if existing:
+                record["created_at"] = existing["created_at"]
+            self.sqlite.execute(
+                "INSERT INTO projects (project_id, user_id, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET user_id=excluded.user_id, payload=excluded.payload, updated_at=excluded.updated_at",
+                (project_id, user_id, json.dumps(record), record["created_at"], now),
+            )
+            self.sqlite.commit()
+            return record
+
+        if self.pool:
+            try:
+                await self.upsert_user(
+                    firebase_uid=user_id,
+                    email=f"{user_id}@udyam.gov.in" if "@" not in user_id else user_id,
+                    name=promoter_name or "Entrepreneur",
+                )
+                async with self.pool.acquire() as conn:
+                    storage_analysis = {
+                        **(analysis_result or {}),
+                        "_project": {key: value for key, value in record.items() if key not in {"analysis_result", "created_at", "updated_at"}},
+                    }
+                    await conn.execute("""
+                        INSERT INTO projects (
+                            project_id, user_id, business_name, business_category,
+                            investment_amount, state_name, district_name, block_name,
+                            village_name, analysis_result, status, language,
+                            additional_business_details, monthly_net_operating_income_override, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+                        ON CONFLICT (project_id) DO UPDATE SET
+                            user_id = EXCLUDED.user_id,
+                            business_name = EXCLUDED.business_name,
+                            business_category = EXCLUDED.business_category,
+                            investment_amount = EXCLUDED.investment_amount,
+                            state_name = EXCLUDED.state_name,
+                            district_name = EXCLUDED.district_name,
+                            block_name = EXCLUDED.block_name,
+                            village_name = EXCLUDED.village_name,
+                            language = EXCLUDED.language,
+                            additional_business_details = EXCLUDED.additional_business_details,
+                            status = EXCLUDED.status,
+                            analysis_result = EXCLUDED.analysis_result,
+                            monthly_net_operating_income_override = EXCLUDED.monthly_net_operating_income_override
+                    """,
+                    project_id,
+                    user_id,
+                    business_name,
+                    business_category,
+                    investment_amount,
+                    state_name,
+                    district_name,
+                    block_name,
+                    village_name,
+                    json.dumps(storage_analysis),
+                    record["status"],
+                    language,
+                    additional_business_details,
+                    project_dict.get("monthly_net_operating_income_override"),
+                    )
+            except Exception as e:
+                logger.warning(f"Could not persist project to PostgreSQL: {e}")
+
+        return record
+
+    async def get_project(self, project_id: str) -> Optional[dict[str, Any]]:
+        if self.sqlite:
+            row = self.sqlite.execute("SELECT payload FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+            if row:
+                rec = json.loads(row["payload"])
+                self.in_memory_projects[project_id] = rec
+                return rec
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT * FROM projects WHERE project_id = $1", project_id)
+                    if row:
+                        rec = self._hydrate_project_record(dict(row))
+                        self.in_memory_projects[project_id] = rec
+                        return rec
+            except Exception as e:
+                logger.warning(f"Could not fetch project from PostgreSQL: {e}")
+
+        return self.in_memory_projects.get(project_id)
+
+    async def list_projects(self, user_id: str = "guest_user") -> list[dict[str, Any]]:
+        if self.sqlite:
+            if user_id == "all":
+                rows = self.sqlite.execute("SELECT payload FROM projects ORDER BY created_at DESC LIMIT 50").fetchall()
+            else:
+                rows = self.sqlite.execute("SELECT payload FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user_id,)).fetchall()
+            results = [json.loads(row["payload"]) for row in rows]
+            for rec in results:
+                self.in_memory_projects[rec["project_id"]] = rec
+            return results
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    if user_id == "all":
+                        rows = await conn.fetch("SELECT * FROM projects ORDER BY created_at DESC LIMIT 50")
+                    else:
+                        rows = await conn.fetch("SELECT * FROM projects WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", user_id)
+                    results = []
+                    for r in rows:
+                        rec = self._hydrate_project_record(dict(r))
+                        self.in_memory_projects[rec["project_id"]] = rec
+                        results.append(rec)
+                    if results:
+                        return results
+            except Exception as e:
+                logger.warning(f"Could not list projects from PostgreSQL: {e}")
+
+        return [p for p in self.in_memory_projects.values() if p.get("user_id") == user_id or user_id == "all"]
+
+    async def update_project_analysis(self, project_id: str, analysis_result: dict[str, Any]) -> Optional[dict[str, Any]]:
+        now = datetime.now(timezone.utc).isoformat()
+        if project_id in self.in_memory_projects:
+            self.in_memory_projects[project_id]["analysis_result"] = analysis_result
+            self.in_memory_projects[project_id]["status"] = "analyzed"
+            self.in_memory_projects[project_id]["updated_at"] = now
+
+        if self.sqlite:
+            current = await self.get_project(project_id)
+            if not current:
+                return None
+            current["analysis_result"] = analysis_result
+            current["status"] = "analyzed"
+            current["updated_at"] = now
+            self.in_memory_projects[project_id] = current
+            self.sqlite.execute("UPDATE projects SET payload = ?, updated_at = ? WHERE project_id = ?", (json.dumps(current), now, project_id))
+            self.sqlite.commit()
+            return current
+
+        if self.pool:
+            try:
+                current = await self.get_project(project_id)
+                if not current:
+                    return None
+                storage_analysis = {
+                    **analysis_result,
+                    "_project": {key: value for key, value in current.items() if key not in {"analysis_result", "created_at", "updated_at", "enterprise_name", "project_cost"}},
+                }
+                async with self.pool.acquire() as conn:
+                    await conn.execute("""
+                        UPDATE projects
+                        SET analysis_result = $1, status = 'analyzed'
+                        WHERE project_id = $2
+                    """, json.dumps(storage_analysis), project_id)
+                current["analysis_result"] = analysis_result
+                current["status"] = "analyzed"
+                self.in_memory_projects[project_id] = current
+                return current
+            except Exception as e:
+                logger.warning(f"Could not update project analysis in PostgreSQL: {e}")
+
+        return self.in_memory_projects.get(project_id)
+
+    async def delete_project(self, project_id: str, user_id: Optional[str] = None) -> bool:
+        if project_id in self.in_memory_projects:
+            if user_id is None or self.in_memory_projects[project_id].get("user_id") == user_id:
+                del self.in_memory_projects[project_id]
+
+        if self.sqlite:
+            if user_id:
+                self.sqlite.execute("DELETE FROM projects WHERE project_id = ? AND user_id = ?", (project_id, user_id))
+            else:
+                self.sqlite.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+            self.sqlite.commit()
+            return True
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    if user_id:
+                        await conn.execute("DELETE FROM projects WHERE project_id = $1 AND user_id = $2", project_id, user_id)
+                    else:
+                        await conn.execute("DELETE FROM projects WHERE project_id = $1", project_id)
+                    return True
+            except Exception as e:
+                logger.warning(f"Could not delete project from PostgreSQL: {e}")
+        return True
+
+    async def save_feasibility_report(self, report_id: str, report_data: dict[str, Any], user_id: Optional[str] = None) -> None:
+        if isinstance(report_data, dict):
+            report_data["_owner_id"] = user_id
+        self.in_memory_reports[report_id] = report_data
+        if len(self.in_memory_reports) > 20:
+            for old_id in list(self.in_memory_reports.keys())[:-15]:
+                self.in_memory_reports.pop(old_id, None)
+
+        if self.sqlite:
+            self.sqlite.execute("INSERT INTO feasibility_reports (report_id, user_id, payload, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO UPDATE SET user_id=excluded.user_id, payload=excluded.payload", (report_id, user_id, json.dumps(report_data), datetime.now(timezone.utc).isoformat()))
+            self.sqlite.commit()
+            return
+
+        if self.pool:
+            try:
+                if user_id:
+                    try:
+                        await self.upsert_user(user_id, f"{user_id}@udyam.gov.in", "Enterprise User")
+                    except Exception as u_err:
+                        logger.warning(f"Could not auto-upsert user profile for {user_id}: {u_err}")
+
+                async with self.pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO feasibility_reports (report_id, user_id, report_payload, dpr_payload, created_at)
+                        VALUES ($1, $2, $3, $4, NOW())
+                        ON CONFLICT (report_id) DO UPDATE SET
+                            user_id = EXCLUDED.user_id,
+                            report_payload = EXCLUDED.report_payload,
+                            dpr_payload = EXCLUDED.dpr_payload
+                    """,
+                    report_id,
+                    user_id,
+                    json.dumps(report_data.get("report", {})),
+                    json.dumps(report_data.get("dpr", {})),
+                    )
+            except Exception as e:
+                logger.warning(f"Could not save feasibility report to PostgreSQL: {e}")
+
+    async def get_feasibility_report(self, report_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        if report_id in self.in_memory_reports:
+            payload = self.in_memory_reports[report_id]
+            owner = payload.get("_owner_id")
+            if user_id is None or owner is None or owner == user_id:
+                return payload
+
+        if self.sqlite:
+            row = self.sqlite.execute("SELECT user_id, payload FROM feasibility_reports WHERE report_id = ?", (report_id,)).fetchone()
+            if row:
+                if user_id is not None and row["user_id"] is not None and row["user_id"] != user_id:
+                    return None
+                payload = json.loads(row["payload"])
+                payload["_owner_id"] = row["user_id"]
+                self.in_memory_reports[report_id] = payload
+                return payload
+
+        if self.pool:
+            try:
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT user_id, report_payload, dpr_payload FROM feasibility_reports WHERE report_id = $1", report_id)
+                    if row:
+                        owner = row["user_id"]
+                        if user_id is not None and owner is not None and owner != user_id:
+                            return None
+                        rep = json.loads(row["report_payload"]) if isinstance(row["report_payload"], str) else row["report_payload"]
+                        dpr = json.loads(row["dpr_payload"]) if isinstance(row["dpr_payload"], str) else row["dpr_payload"]
+                        payload = {"report": rep, "dpr": dpr, "_owner_id": owner}
+                        self.in_memory_reports[report_id] = payload
+                        return payload
+            except Exception as e:
+                logger.warning(f"Could not fetch feasibility report from PostgreSQL: {e}")
+
+        return None
+
+
+db_manager = DatabaseManager.get_instance()

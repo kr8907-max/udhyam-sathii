@@ -1,17 +1,11 @@
-# ==============================================================================
-# Udyam Saathi — Git Ignore Configuration
-# ==============================================================================
 
-# Misc / Archived Files
 misc/
 To be Deleted/
 to_delete/
 
-# Docs (keep only demo/ for GitHub Pages)
 docs/*
 !docs/demo/
 
-# Environment Variables & Secrets
 .env
 .env.local
 .env.*.local
@@ -20,7 +14,6 @@ docs/*
 serviceAccountKey.json
 firebase-credentials.json
 
-# Python Bytecode & Cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -43,7 +36,6 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environments
 venv/
 .venv/
 env/
@@ -51,7 +43,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# Testing & Coverage
 .pytest_cache/
 .coverage
 .coverage.*
@@ -63,14 +54,12 @@ coverage.xml
 .hypothesis/
 htmlcov/
 
-# Node / Frontend Artifacts
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Operating System & IDE Files
 .DS_Store
 Thumbs.db
 ehthumbs.db
@@ -81,7 +70,6 @@ Desktop.ini
 *.swo
 *~
 
-# Logs & Temporary Storage
 *.log
 *.sqlite3
 *.sqlite3-shm
@@ -91,7 +79,6 @@ browser/scratchpad_*.md
 backend/app/core/data/raw/
 backend/app/data/snapshots/
 
-# Presentation & Document Files (only main PDF kept in root manually)
 *.pdf
 *.docx
 *.pptx
